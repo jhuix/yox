@@ -1,4 +1,6 @@
 
+import isDef from 'yox-common/function/isDef'
+import execute from 'yox-common/function/execute'
 import toString from 'yox-common/function/toString'
 
 import * as is from 'yox-common/util/is'
@@ -15,81 +17,113 @@ import bindEvent from './event'
 import api from '../platform/web/api'
 import * as event from '../config/event'
 
-const VALUE = 'value'
+const RAW_CHECKED = 'checked'
+
+function getOptionValue(option) {
+  return isDef(option[ env.RAW_VALUE ]) ? option[ env.RAW_VALUE ] : option[ env.RAW_TEXT ]
+}
 
 const inputControl = {
   set(el, keypath, instance) {
     let value = toString(instance.get(keypath))
-    if (value !== el.value) {
-      el.value = value
+    if (value !== el[ env.RAW_VALUE ]) {
+      el[ env.RAW_VALUE ] = value
     }
   },
   sync(el, keypath, instance) {
-    instance.set(keypath, el.value)
+    instance.set(keypath, el[ env.RAW_VALUE ])
   },
-  attr: VALUE,
+  attr: env.RAW_VALUE,
 }
 
 const selectControl = {
   set(el, keypath, instance) {
-    let value = toString(instance.get(keypath))
-    let { options, selectedIndex } = el
-    let selectedOption = options[ selectedIndex ]
-    if (selectedOption && value !== selectedOption.value) {
-      array.each(
-        options,
-        function (option, index) {
-          if (option.value === value) {
+    let value = instance.get(keypath), options = el.options, task
+    if (options) {
+      if (el.multiple) {
+        task = function (option) {
+          option.selected = array.has(value, getOptionValue(option), env.FALSE)
+        }
+      }
+      else {
+        task = function (option, index) {
+          if (getOptionValue(option) == value) {
             el.selectedIndex = index
             return env.FALSE
           }
         }
-      )
+      }
+      array.each(options, task)
     }
   },
   sync(el, keypath, instance) {
-    let { value } = el.options[ el.selectedIndex ]
-    instance.set(keypath, value)
+    let options = el.options
+    if (el.multiple) {
+      let values = [ ]
+      array.each(
+        options,
+        function (option) {
+          if (option.selected) {
+            array.push(
+              values,
+              getOptionValue(option)
+            )
+          }
+        }
+      )
+      // 如果新旧值都是 []，set 没有意义
+      if (!array.falsy(values) || !array.falsy(instance.get(keypath))) {
+        instance.set(keypath, values)
+      }
+    }
+    else {
+      instance.set(
+        keypath,
+        getOptionValue(
+          options[el.selectedIndex]
+        )
+      )
+    }
   },
 }
 
 const radioControl = {
   set(el, keypath, instance) {
-    el.checked = el.value === toString(instance.get(keypath))
+    el[ RAW_CHECKED ] = el[ env.RAW_VALUE ] === toString(instance.get(keypath))
   },
   sync(el, keypath, instance) {
-    if (el.checked) {
-      instance.set(keypath, el.value)
+    if (el[ RAW_CHECKED ]) {
+      instance.set(keypath, el[ env.RAW_VALUE ])
     }
   },
-  attr: 'checked'
+  attr: RAW_CHECKED
 }
 
 const checkboxControl = {
   set(el, keypath, instance) {
     let value = instance.get(keypath)
-    el.checked = is.array(value)
-      ? array.has(value, el.value, env.FALSE)
+    el[ RAW_CHECKED ] = is.array(value)
+      ? array.has(value, el[ env.RAW_VALUE ], env.FALSE)
       : (is.boolean(value) ? value : !!value)
   },
   sync(el, keypath, instance) {
     let value = instance.get(keypath)
     if (is.array(value)) {
-      if (el.checked) {
-        instance.append(keypath, el.value)
+      if (el[ RAW_CHECKED ]) {
+        instance.append(keypath, el[ env.RAW_VALUE ])
       }
       else {
         instance.removeAt(
           keypath,
-          array.indexOf(value, el.value, env.FALSE)
+          array.indexOf(value, el[ env.RAW_VALUE ], env.FALSE)
         )
       }
     }
     else {
-      instance.set(keypath, el.checked)
+      instance.set(keypath, el[ RAW_CHECKED ])
     }
   },
-  attr: 'checked'
+  attr: RAW_CHECKED
 }
 
 const componentControl = {
@@ -115,86 +149,78 @@ const specialControls = {
 
 export default function ({ el, node, instance, directives, attrs, component }) {
 
-  let { value, keypathStack } = node
-  if (string.falsy(value)) {
-    return
-  }
+  let keypath = node[ env.RAW_VALUE ]
+  if (keypath) {
 
-  let keypath = instance.lookup(value, keypathStack)
-  if (!keypath) {
-    logger.fatal(`"${value}" is not defined on the instance but referenced during render.`)
-  }
+    let set = function () {
+      if (control) {
+        control.set(target, keypath, instance)
+      }
+    },
+    sync = function () {
+      control.sync(target, keypath, instance)
+    },
+    target,
+    control,
+    unbindTarget,
+    unbindInstance
 
-  let set = function () {
-    if (control) {
-      control.set(target, keypath, instance)
+    if (component) {
+
+      target = component
+      control = componentControl
+
+      let field = component.$model
+
+      component.watch(field, sync)
+      unbindTarget = function () {
+        component.unwatch(field, sync)
+      }
+
     }
-  }
-  let sync = function () {
-    control.sync(target, keypath, instance)
-  }
+    else {
 
-  let target, control, unbindTarget, unbindInstance
-  if (component) {
+      target = el
+      control = specialControls[ el[ env.RAW_TYPE ] ] || specialControls[ api[ env.RAW_TAG ](el) ]
 
-    target = component
-    control = componentControl
-
-    let field = component.$model = component.$options.model || VALUE
-
-    if (!object.has(attrs, field)) {
-      set()
-    }
-    component.watch(field, sync)
-    unbindTarget = function () {
-      component.unwatch(field, sync)
-      delete component.$model
-    }
-
-  }
-  else {
-
-    target = el
-    control = specialControls[ el.type ] || specialControls[ api.tag(el) ]
-
-    let type = event.CHANGE
-    if (!control) {
-      control = inputControl
-      if (object.exists(el, 'autofocus')) {
+      let type = event.CHANGE
+      if (!control) {
+        control = inputControl
         type = event.INPUT
       }
+
+      if (!control.attr || !object.has(attrs, control.attr)) {
+        set()
+      }
+
+      unbindTarget = bindEvent({
+        el,
+        node,
+        instance,
+        directives,
+        type,
+        listener: sync,
+      })
+
     }
 
-    if (!control.attr || !object.has(attrs, control.attr)) {
-      set()
-    }
-
-    unbindTarget = bindEvent({
-      el,
-      node,
-      instance,
-      directives,
-      type,
-      listener: sync,
-    })
-
-  }
-
-  nextTask.prepend(
-    function () {
-      if (set) {
-        instance.watch(keypath, set)
-        unbindInstance = function () {
-          instance.unwatch(keypath, set)
+    nextTask.prepend(
+      function () {
+        if (set) {
+          instance.watch(keypath, set)
+          unbindInstance = function () {
+            instance.unwatch(keypath, set)
+          }
         }
       }
-    }
-  )
+    )
 
-  return function () {
-    unbindTarget && unbindTarget()
-    unbindInstance && unbindInstance()
-    set = env.NULL
+    return function () {
+      execute(unbindTarget)
+      execute(unbindInstance)
+      set = env.NULL
+    }
+
   }
 
 }

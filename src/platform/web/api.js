@@ -13,7 +13,7 @@ import * as event from '../../config/event'
 let api = object.copy(domApi)
 
 // import * as oldApi from './oldApi'
-//
+
 // if (env.doc && !env.doc.addEventListener) {
 //   object.extend(api, oldApi)
 // }
@@ -53,7 +53,7 @@ api.specialEvents = {
   }
 }
 
-const EMITTER_KEY = '_emitter'
+const RAW_EMITTER = '$emitter'
 
 /**
  * 绑定事件
@@ -64,16 +64,16 @@ const EMITTER_KEY = '_emitter'
  * @param {?*} context
  */
 api.on = function (element, type, listener, context) {
-  let emitter = element[ EMITTER_KEY ] || (element[ EMITTER_KEY ] = new Emitter())
+  let emitter = element[ RAW_EMITTER ] || (element[ RAW_EMITTER ] = new Emitter())
   if (!emitter.has(type)) {
     let nativeListener = function (e, type) {
       if (!Event.is(e)) {
         e = new Event(api.createEvent(e, element))
       }
       if (type) {
-        e.type = type
+        e[ env.RAW_TYPE ] = type
       }
-      emitter.fire(e.type, e, context)
+      emitter.fire(e[ env.RAW_TYPE ], e, context)
     }
     emitter[ type ] = nativeListener
     let special = api.specialEvents[ type ]
@@ -96,8 +96,8 @@ api.on = function (element, type, listener, context) {
  *
  */
 api.off = function (element, type, listener) {
-  let emitter = element[ EMITTER_KEY ]
-  let types = object.keys(emitter.listeners)
+  let emitter = element[ RAW_EMITTER ],
+  types = object.keys(emitter.listeners)
   // emitter 会根据 type 和 listener 参数进行适当的删除
   emitter.off(type, listener)
   // 根据 emitter 的删除结果来操作这里的事件 listener
@@ -105,8 +105,8 @@ api.off = function (element, type, listener) {
     types,
     function (type, index) {
       if (emitter[ type ] && !emitter.has(type)) {
-        let nativeListener = emitter[ type ]
-        let special = api.specialEvents[ type ]
+        let nativeListener = emitter[ type ],
+        special = api.specialEvents[ type ]
         if (special) {
           special.off(element, nativeListener)
         }
@@ -119,8 +119,8 @@ api.off = function (element, type, listener) {
     },
     env.TRUE
   )
-  if (!types.length) {
-    api.removeProp(element, EMITTER_KEY)
+  if (!types[ env.RAW_LENGTH ]) {
+    api.removeProp(element, RAW_EMITTER)
   }
 }
 

@@ -4,9 +4,11 @@ Just like Vue, but it is more lightweight and easy than Vue.
 
 The key is that yox supports IE6.
 
-**可用于生产环境，没有 Vue 使用经验不建议使用，谢谢**。
+> QQ 群 232021930，**可用于生产环境，没有 Vue 使用经验不建议使用，谢谢**。
 
-> QQ 群 232021930
+> 关于未来版本的重要提示：
+> 1. 模板将不再兼容类似 `list[0].name` 的数组语法，必须写成 `list.0.name`
+> 2. legacy 版本将不再提供补丁函数的支持，必须自行引入 `es5-shim.js/es5-sham.js/json.js`
 
 ```js
 {
@@ -49,13 +51,30 @@ The key is that yox supports IE6.
   data: function () { return {}; },
 
   // 计算属性
-  computed: {},
+  computed: {
+    field1: function () {
+
+    },
+    field2: {
+      deps: [ 'dep1', 'dep2' ],
+      get: function () {
+
+      }
+    }
+  },
   // 监听事件
   // 包括组件自身的事件，和子组件冒泡上来的事件
-  events: {},
+  events: {
+    eventName: function (event, data) {
+    }
+  },
 
   // 监听数据变化
-  watchers: {},
+  watchers: {
+    keypath: function (newValue, oldValue, keypath) {
+
+    }
+  },
 
   // 组件用到的子组件
   // 如果已全局注册，可无需再注册
@@ -109,12 +128,25 @@ CDN
 
 ## Example
 
-* [Hello World](http://code.hcharts.cn/musicode/h5h0Q7)
-* [Data Binding](http://code.hcharts.cn/musicode/94B0Qo)
-* [Render List](http://code.hcharts.cn/musicode/hMt0Qb)
-* [Event Handle](http://code.hcharts.cn/musicode/hMd0Lr)
-* [Custom Component](https://jsfiddle.net/musicode/3jx6x8e1/4/)
+* [Hello World](https://jsfiddle.net/musicode/coLxry2w/)
+* [Condition](https://jsfiddle.net/musicode/5pq2kmo8/6/)
+* [Render List](https://jsfiddle.net/musicode/1kewyatu/)
+* [Data Binding](https://jsfiddle.net/musicode/u1kj5vyL/)
+* [Event Handle](https://jsfiddle.net/musicode/2hpLnoz5/)
+* [Custom Component](https://jsfiddle.net/musicode/3jx6x8e1/)
 
 ## Document
 
 [技术预览版](https://musicode.gitbooks.io/yox)
+
+## Donation
+
+If you think Yox is very helpful to you, please give me some encouragement.
+
+Wechat Pay
+
+<img src="https://user-images.githubusercontent.com/2732303/44254903-ce6d3f80-a236-11e8-86dd-f6b27a7f94df.png" width="200">
+
+Ali Pay
+
+<img src="https://user-images.githubusercontent.com/2732303/44254929-e5139680-a236-11e8-95e2-f5a864246f83.png" width="200">

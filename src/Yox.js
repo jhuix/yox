@@ -22,7 +22,7 @@ import * as expressionCompiler from 'yox-expression-compiler'
 import * as expressionNodeType from 'yox-expression-compiler/src/nodeType'
 
 import {
-  Watcher,
+  Computed,
   Observer,
 } from 'yox-observer'
 
@@ -34,7 +34,7 @@ import api from './platform/web/api'
 
 const patch = snabbdom.init(api)
 
-const TEMPLATE = 'template'
+const TEMPLATE = env.RAW_TEMPLATE
 const TEMPLATE_COMPUTED = '$' + TEMPLATE
 
 export default class Yox {
@@ -60,30 +60,25 @@ export default class Yox {
       replace,
       computed,
       template,
+      transitions,
       components,
       directives,
       partials,
       filters,
+      slots,
       events,
-      watchers,
       methods,
+      watchers,
       propTypes,
       extensions,
     } = options
 
     extensions && object.extend(instance, extensions)
 
-    let source
-    if (is.object(propTypes)) {
-      source = Yox.validate(props || { }, propTypes)
-      // validate 可能过滤 $children 字段
-      // 这里确保外面传入的 $children 还在
-      if (props && object.has(props, config.SPECIAL_CHILDREN)) {
-        source[ config.SPECIAL_CHILDREN ] = props[ config.SPECIAL_CHILDREN ]
-      }
-    }
-    else {
-      source = props || { }
+    let source = this.checkPropTypes(props || { })
+
+    if (slots) {
+      object.extend(source, slots)
     }
 
     // 如果传了 props，则 data 应该是个 function
@@ -128,7 +123,9 @@ export default class Yox {
           api.find(template)
         )
       }
-      if (!pattern.tag.test(template)) {
+      // 如果是根组件，必须有一个根元素
+      // 如果是子组件，可以是 $children
+      if (!pattern.tag.test(template) && !parent) {
         logger.error(templateError)
       }
     }
@@ -146,7 +143,7 @@ export default class Yox {
       if (api.isElement(el)) {
         if (!replace) {
           api.html(el, '<div></div>')
-          el = api.children(el)[ 0 ]
+          el = api[ env.RAW_CHILDREN ](el)[ 0 ]
         }
       }
       else {
@@ -180,7 +177,8 @@ export default class Yox {
       }
     }
 
-    smartSet('component', components)
+    smartSet('transition', transitions)
+    smartSet(env.RAW_COMPONENT, components)
     smartSet('directive', directives)
     smartSet('partial', partials)
     smartSet('filter', filters)
@@ -191,24 +189,25 @@ export default class Yox {
 
       // 确保组件根元素有且只有一个
       template = Yox.compile(template)
-      if (template.length > 1) {
+      if (template[ env.RAW_LENGTH ] > 1) {
         logger.fatal(templateError)
       }
       instance.$template = template[ 0 ]
 
-      instance.$renderCount = 0
-      instance.$renderWatcher = instance.$observer.addComputed(
+      instance.$observer.addComputed(
         TEMPLATE_COMPUTED,
         function () {
-          instance.$renderCount++
           return instance.render()
         }
       )
-      if (!watchers) {
+      if (watchers) {
+        watchers = object.copy(watchers)
+      }
+      else {
         watchers = { }
       }
-      watchers[ TEMPLATE_COMPUTED ] = function (newNode, oldNode) {
-        instance.updateView(newNode, oldNode)
+      watchers[ TEMPLATE_COMPUTED ] = function (newNode) {
+        instance.updateView(newNode, instance.$node)
       }
 
       instance.updateView(
@@ -217,15 +216,16 @@ export default class Yox {
       )
     }
 
+    if (events) {
+      instance.on(events)
+    }
+
     // 确保早于 AFTER_MOUNT 执行
-    if (watchers || events) {
+    if (watchers) {
       nextTask.prepend(
         function () {
-          if (watchers && instance.$observer) {
+          if (instance.$observer) {
             instance.watch(watchers)
-          }
-          if (events && instance.$emitter) {
-            instance.on(events)
           }
         }
       )
@@ -261,7 +261,9 @@ export default class Yox {
    * @param {?*} value
    */
   set(keypath, value) {
-    this.$observer.set(keypath, value)
+    // 组件经常有各种异步改值，为了避免组件销毁后依然调用 set
+    // 这里判断一下，至于其他方法的异步调用就算了，业务自己控制吧
+    this.$observer && this.$observer.set(keypath, value)
   }
 
   /**
@@ -329,7 +331,7 @@ export default class Yox {
     }
 
     let { $parent, $children, $emitter } = instance
-    let isComplete = $emitter.fire(event.type, args, instance)
+    let isComplete = $emitter.fire(event[ env.RAW_TYPE ], args, instance)
     if (isComplete) {
       if (downward) {
         if ($children) {
@@ -389,69 +391,19 @@ export default class Yox {
   }
 
   /**
-   * 向上查找数据
-   *
-   * @param {string} key
-   * @param {Array.<string>} stack
-   * @param {?Object} localVars
-   * @param {?Object} defaultVars
-   * @return {?*}
-   */
-  lookup(key, stack, localVars, defaultVars) {
-
-    let instance = this, value
-
-    let index = stack.length - 1
-    let lookup = index > 0 && keypathUtil.startsWith(key, env.RAW_THIS) === env.FALSE
-
-    let getKeypath = function (index) {
-      let keypath = keypathUtil.join(stack[ index ], key)
-      if (localVars && object.has(localVars, keypath)) {
-        value = localVars[ keypath ]
-        return keypath
-      }
-      value = instance.get(keypath, getKeypath)
-      if (value === getKeypath) {
-        if (lookup && index > 0) {
-          return getKeypath(index - 1)
-        }
-      }
-      else {
-        return keypath
-      }
-    }
-
-    let keypath = getKeypath(index)
-
-    if (localVars) {
-      if (keypath != env.NULL) {
-        return value
-      }
-      if (defaultVars) {
-        return defaultVars[ key ]
-      }
-    }
-    else {
-      return keypath
-    }
-
-  }
-
-  /**
    * 对于某些特殊场景，修改了数据，但是模板的依赖中并没有这一项
    * 而你非常确定需要更新模板，强制刷新正是你需要的
    */
   forceUpdate() {
 
     if (this.$node) {
-
-      let { $renderCount } = this
-
-      this.$observer.nextRun()
-
-      if (this.$renderCount === $renderCount) {
+      let computed = this.$observer.computed[ TEMPLATE_COMPUTED ]
+      if (computed.isDirty()) {
+        this.$observer.nextRun()
+      }
+      else {
         this.updateView(
-          this.$renderWatcher.get(env.TRUE),
+          computed.get(env.TRUE),
           this.$node
         )
       }
@@ -466,53 +418,145 @@ export default class Yox {
    */
   render() {
 
-    let instance = this
-
-    let { $template, $getter, $setter } = instance
+    let instance = this, { $template, $getter } = instance
 
     if (!$getter) {
 
       let filters = object.extend({ }, registry.filter, instance.$filters)
 
+      let getValue = function (key, expr, keypathStack) {
+
+        if (keypathStack) {
+
+          let value, absoluteKeypath,
+          lookup = expr.lookup !== env.FALSE,
+          // keypathStack 的结构是 keypath, scope 作为一组
+          index = keypathStack[ env.RAW_LENGTH ] - 2,
+          getKeypath = function () {
+
+            let keypathIndex = index
+
+            if (!lookup) {
+              let keys = [ ]
+              keypathUtil.each(
+                key,
+                function (key) {
+                  if (key === env.KEYPATH_PRIVATE_PARENT) {
+                    keypathIndex -= 2
+                  }
+                  else if (key !== env.KEYPATH_PRIVATE_CURRENT) {
+                    array.push(keys, key)
+                  }
+                }
+              )
+              key = array.join(keys, env.KEYPATH_SEPARATOR)
+            }
+
+            let keypath = keypathUtil.join(keypathStack[ keypathIndex ], key)
+            if (!absoluteKeypath) {
+              absoluteKeypath = keypath
+            }
+            let scope = keypathStack[ keypathIndex + 1 ]
+
+            // #each 时，scope 存储是当前循环的数据，如 keypath、index 等
+            // scope 无法直接拿到当前数组项，它存在于 scope[ 'this' ] 上
+            // 为什么这样设计呢？
+            // 因为 {{this}} 的存在，经过上面的处理，key 会是 ''
+            // 而 {{this.length}} 会变成 'length'
+
+            // 如果取的是 scope 上直接有的数据，如 keypath
+            if (object.has(scope, key)) {
+              value = scope[ key ]
+              return keypath
+            }
+            // 如果取的是数组项，则要更进一步
+            else if (object.has(scope, env.RAW_THIS)) {
+              scope = scope[ env.RAW_THIS ]
+
+              // 到这里 scope 可能为空
+              // 比如 new Array(10) 然后遍历这个数组，每一项肯定是空
+
+              // 取 this
+              if (key === char.CHAR_BLANK) {
+                value = scope
+                return keypath
+              }
+              // 取 this.xx
+              else if (scope && object.has(scope, key)) {
+                value = scope[ key ]
+                return keypath
+              }
+            }
+
+            // 正常取数据
+            value = instance.get(keypath, getKeypath)
+            if (value === getKeypath) {
+              if (lookup && index > 0) {
+                index--
+                return getKeypath()
+              }
+            }
+            else {
+              return keypath
+            }
+
+          },
+          keypath = getKeypath()
+
+          if (isDef(keypath)) {
+            absoluteKeypath = keypath
+          }
+          else {
+            value = env.UNDEFINED
+            if (filters) {
+              let result = object.get(filters, key)
+              if (result) {
+                value = result[ env.RAW_VALUE ]
+              }
+            }
+          }
+
+          expr[ env.RAW_ABSOLUTE_KEYPATH ] = absoluteKeypath
+
+          return value
+
+        }
+        else {
+          return instance.get(key)
+        }
+      }
+
       $getter =
       instance.$getter = function (expr, keypathStack, binding) {
-        let lastWatcher = Observer.watcher
+        let lastComputed = Observer.computed, value
         if (binding) {
-          Observer.watcher = env.NULL
+          Observer.computed = env.NULL
         }
-        let value = expressionCompiler.execute(
-          expr,
-          function (key) {
-            if (key === config.SPECIAL_KEYPATH) {
-              return array.last(keypathStack)
-            }
-            return instance.lookup(key, keypathStack, instance.$vars, filters)
-          },
-          instance
-        )
+        if (is.string(expr)) {
+          value = getValue(expr)
+        }
+        else {
+          value = expressionCompiler.execute(
+            expr,
+            function (key, node) {
+              return getValue(key, node, keypathStack)
+            },
+            instance
+          )
+        }
         if (binding) {
-          Observer.watcher = lastWatcher
+          Observer.computed = lastComputed
         }
         return value
       }
     }
 
-    if (!$setter) {
-      $setter =
-      instance.$setter = function (currentKeypath, key, value) {
-        instance.$vars[ keypathUtil.join(currentKeypath, key) ] = value
-      }
-    }
-
-    // 渲染模板过程中产生的临时变量
-    instance.$vars = { }
-
     return templateCompiler.render(
       $template,
       $getter,
-      $setter,
       instance
     )
+
   }
 
   /**
@@ -523,12 +567,9 @@ export default class Yox {
    */
   updateView(newNode, oldNode) {
 
-    let instance = this, afterHook
+    let instance = this, { $node, $options } = instance, afterHook
 
-    let {
-      $node,
-      $options,
-    } = instance
+    instance.$flags = { }
 
     if ($node) {
       execute($options[ config.HOOK_BEFORE_UPDATE ], instance)
@@ -556,20 +597,62 @@ export default class Yox {
   }
 
   /**
+   * 校验组件参数
+   *
+   * @param {Object} props
+   * @return {?Object}
+   */
+  checkPropTypes(props) {
+    let { propTypes } = this.$options
+    return propTypes
+      ? Yox.checkPropTypes(props, propTypes)
+      : props
+  }
+
+  /**
    * 创建子组件
    *
    * @param {Object} options 组件配置
-   * @param {?Object} extra 添加进组件配置，但不修改配置的数据，比如 el、props 等
+   * @param {?Object} vnode 虚拟节点
+   * @param {?HTMLElement} el DOM 元素
    * @return {Yox} 子组件实例
    */
-  create(options, extra) {
-    options = object.extend({ }, options, extra)
+  create(options, vnode, el) {
+
+    options = object.copy(options)
     options.parent = this
+
+    if (vnode && el) {
+
+      options.el = el
+      options.replace = env.TRUE
+      options.slots = vnode.slots
+
+      let { attrs } = vnode
+
+      if (vnode.model) {
+        if (!attrs) {
+          attrs = { }
+        }
+        let field = options.model || env.RAW_VALUE
+        if (!object.has(attrs, field)) {
+          attrs[ field ] = vnode.instance.get(vnode.model)
+        }
+        options.extensions = {
+          $model: field,
+        }
+      }
+
+      options.props = attrs
+
+    }
+
     let child = new Yox(options)
     array.push(
       this.$children || (this.$children = [ ]),
       child
     )
+
     return child
   }
 
@@ -593,27 +676,30 @@ export default class Yox {
    */
   compileDirective(directive) {
 
-    let instance = this
-    let { value, expr, keypath, keypathStack } = directive
+    let instance = this,
+    expr = directive[ env.RAW_EXPR ],
+    value = directive[ env.RAW_VALUE ],
+    keypath = directive[ env.RAW_KEYPATH ],
+    keypathStack = directive.keypathStack
 
-    if (expr && expr.type === expressionNodeType.CALL) {
-      let { callee, args } = expr, method = instance[ callee.name ]
+    if (expr && expr[ env.RAW_TYPE ] === expressionNodeType.CALL) {
+      let { callee, args } = expr, method = instance[ callee[ env.RAW_NAME ] ]
       if (method) {
         let getValue = function (node) {
           return instance.$getter(node, keypathStack)
         }
-        return function (event) {
+        return function (event, data) {
           let isEvent = Event.is(event), result
-          if (!args.length) {
+          if (args && args[ env.RAW_LENGTH ]) {
+            let scope = array.last(keypathStack)
             if (isEvent) {
-              result = execute(method, instance, event)
+              scope[ config.SPECIAL_EVENT ] = event
             }
-          }
-          else {
-            if (isEvent) {
-              instance.$setter(keypath, config.SPECIAL_EVENT, event)
-            }
+            scope[ config.SPECIAL_DATA ] = data
             result = execute(method, instance, args.map(getValue))
+          }
+          else if (isEvent) {
+            result = execute(method, instance, data ? [ event, data ] : event)
           }
           if (result === env.FALSE && isEvent) {
             event.prevent().stop()
@@ -623,9 +709,9 @@ export default class Yox {
     }
     else if (value) {
       return function (event, data) {
-        if (event.type !== value) {
+        if (event[ env.RAW_TYPE ] !== value) {
           event = new Event(event)
-          event.type = value
+          event[ env.RAW_TYPE ] = value
         }
         instance.fire(event, data)
       }
@@ -654,7 +740,7 @@ export default class Yox {
     }
 
     if ($node) {
-      patch($node, { text: char.CHAR_BLANK })
+      patch($node, snabbdom.createTextVnode(char.CHAR_BLANK))
     }
 
     $emitter.off()
@@ -790,7 +876,7 @@ export default class Yox {
  *
  * @type {string}
  */
-Yox.version = '0.56.0'
+Yox.version = '0.63.0'
 
 /**
  * 工具，便于扩展、插件使用
@@ -808,8 +894,6 @@ let { prototype } = Yox
 
 // 全局注册
 let registry = { }
-
-const COMPONENT = 'component'
 
 function getResourceAsync(data, name, callback) {
   let value = data[ name ]
@@ -860,18 +944,18 @@ function setResource(data, name, value) {
  * @param {?Object} value
  */
 array.each(
-  [ COMPONENT, 'directive', 'partial', 'filter' ],
+  [ env.RAW_COMPONENT, 'transition', 'directive', 'partial', 'filter' ],
   function (type) {
     prototype[ type ] = function (name, value) {
       let instance = this, prop = `$${type}s`, data = instance[ prop ]
       if (is.string(name)) {
-        let length = arguments.length, hasValue = data && object.has(data, name)
+        let length = arguments[ env.RAW_LENGTH ], hasValue = data && object.has(data, name)
         if (length === 1) {
           return hasValue
             ? data[ name ]
             : Yox[ type ](name)
         }
-        else if (length === 2 && type === COMPONENT && is.func(value)) {
+        else if (length === 2 && type === env.RAW_COMPONENT && is.func(value)) {
           return hasValue
             ? getResourceAsync(data, name, value)
             : Yox[ type ](name, value)
@@ -886,13 +970,13 @@ array.each(
     Yox[ type ] = function (name, value) {
       let data = registry[ type ]
       if (is.string(name)) {
-        let length = arguments.length, hasValue = data && object.has(data, name)
+        let length = arguments[ env.RAW_LENGTH ], hasValue = data && object.has(data, name)
         if (length === 1) {
           return hasValue
             ? data[ name ]
             : env.UNDEFINED
         }
-        else if (length === 2 && type === COMPONENT && is.func(value)) {
+        else if (length === 2 && type === env.RAW_COMPONENT && is.func(value)) {
           return hasValue
             ? getResourceAsync(data, name, value)
             : value()
@@ -935,22 +1019,32 @@ Yox.compile = function (template) {
  * @param {Object} propTypes 数据格式
  * @return {Object} 验证通过的数据
  */
-Yox.validate = function (props, propTypes) {
-  let result = { }
+Yox.checkPropTypes = function (props, propTypes) {
+  let result = object.copy(props)
   object.each(
     propTypes,
     function (rule, key) {
 
-      let { type, value, required } = rule
+      // 类型
+      let type = rule[ env.RAW_TYPE ],
+      // 默认值
+      value = rule[ env.RAW_VALUE ],
+      // 是否必传
+      required = rule.required
 
       required = required === env.TRUE
         || (is.func(required) && required(props))
 
+      // 传了数据
       if (isDef(props[ key ])) {
+        let target = props[ key ]
+        if (is.func(rule)) {
+          result[ key ] = rule(target)
+        }
         // 如果不写 type 或 type 不是 字符串 或 数组
         // 就当做此规则无效，和没写一样
-        if (type) {
-          let target = props[ key ], matched
+        else if (type) {
+          let matched
           // 比较类型
           if (!string.falsy(type)) {
             matched = is.is(target, type)
@@ -971,24 +1065,18 @@ Yox.validate = function (props, propTypes) {
             // 比如当 a 有值时，b 可以为空之类的
             matched = type(target, props)
           }
-          if (matched === env.TRUE) {
-            result[ key ] = target
-          }
-          else {
-            logger.warn(`"${key}" prop's type is not matched.`)
+          if (matched !== env.TRUE) {
+            logger.warn(`The prop "${key}" ${env.RAW_TYPE} is not matched.`)
           }
         }
       }
       else if (required) {
-        logger.warn(`"${key}" prop is not found.`)
+        logger.warn(`The prop "${key}" is marked as required, but its ${env.RAW_VALUE} is "${env.RAW_UNDEFINED}".`)
       }
-      else if (object.has(rule, 'value')) {
-        if (type === env.RAW_FUNCTION) {
-          result[ key ] = value
-        }
-        else {
-          result[ key ] = is.func(value) ? value(props) : value
-        }
+      else if (object.has(rule, env.RAW_VALUE)) {
+        result[ key ] = type === env.RAW_FUNCTION
+          ? value
+          : (is.func(value) ? value(props) : value)
       }
     }
   )
@@ -1012,3 +1100,8 @@ import binding from './directive/binding'
 
 // 全局注册内置指令
 Yox.directive({ event, model, binding })
+
+import hasSlot from './filter/hasSlot'
+
+// 全局注册内置过滤器
+Yox.filter({ hasSlot })

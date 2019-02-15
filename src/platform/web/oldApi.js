@@ -1,6 +1,4 @@
 
-import execute from 'yox-common/function/execute'
-
 import * as is from 'yox-common/util/is'
 import * as env from 'yox-common/util/env'
 import * as array from 'yox-common/util/array'
@@ -11,6 +9,7 @@ import Event from 'yox-common/util/Event'
 
 import * as event from '../../config/event'
 
+// shim start
 if (!Object.keys) {
   Object.keys = function (obj) {
     let result = [ ]
@@ -18,16 +17,6 @@ if (!Object.keys) {
       array.push(result, key)
     }
     return result
-  }
-  Object.create = function (proto, descriptor) {
-    function Class() { }
-    Class.prototype = proto
-    proto = new Class()
-    let constructor = descriptor && descriptor.constructor
-    if (constructor) {
-      proto.constructor = constructor.value
-    }
-    return proto
   }
 }
 if (!String.prototype.trim) {
@@ -75,6 +64,7 @@ if (!Array.prototype.map) {
     return result
   }
 }
+// shim end
 
 class IEEvent {
 
@@ -100,9 +90,9 @@ class IEEvent {
 
 function addInputListener(element, listener) {
   listener.$listener = function (e) {
-    if (e.propertyName === 'value') {
+    if (e.propertyName === env.RAW_VALUE) {
       e = new Event(e)
-      e.type = event.INPUT
+      e[ env.RAW_TYPE ] = event.INPUT
       listener.call(this, e)
     }
   }
@@ -117,7 +107,7 @@ function removeInputListener(element, listener) {
 function addChangeListener(element, listener) {
   listener.$listener = function (e) {
     e = new Event(e)
-    e.type = event.CHANGE
+    e[ env.RAW_TYPE ] = event.CHANGE
     listener.call(this, e)
   }
   on(element, event.CLICK, listener.$listener)
@@ -130,7 +120,7 @@ function removeChangeListener(element, listener) {
 
 function isBox(element) {
   return element.tagName === 'INPUT'
-    && (element.type === 'radio' || element.type === 'checkbox')
+    && (element[ env.RAW_TYPE ] === 'radio' || element[ env.RAW_TYPE ] === 'checkbox')
 }
 
 export function on(element, type, listener) {
@@ -170,15 +160,12 @@ export function find(selector, context) {
 
 export function setProp(element, name, value) {
   try {
-    if (name === 'textContent' && !object.exists(element, name)) {
-      name = 'innerText'
-    }
     object.set(element, name, value)
   }
   catch (e) {
-    if (element.tagName === 'STYLE' && (name === 'innerHTML' || name === 'innerText')) {
-      element.setAttribute('type', 'text/css')
-      element.styleSheet.cssText = value;
+    if (element.tagName === 'STYLE' && (name === 'innerHTML' || name === 'innerText' || name === 'textContent')) {
+      element.setAttribute(env.RAW_TYPE, 'text/css')
+      element.styleSheet.cssText = value
     }
   }
 }
